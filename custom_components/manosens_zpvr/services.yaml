@@ -1,0 +1,29 @@
+# Documentation for the ManoSens ZPVR services.
+
+set_pressure:
+  name: Set Pressure
+  description: Sets the pressure value on the ManoSens ZPVR device.
+  fields:
+    value:
+      name: Pressure Value
+      description: The desired pressure value to set.
+      required: true
+      example: 3.1
+      selector:
+        number:
+          min: 0.0
+          max: 5.0 # Max pressure set to 5.0 as requested
+          step: 0.1
+          mode: slider
+
+set_start_stop:
+  name: Start/Stop Device
+  description: Controls the start/stop state of the ManoSens ZPVR device.
+  fields:
+    value:
+      name: State
+      description: Set to 'true' to start the device, 'false' to stop it.
+      required: true
+      example: true
+      selector:
+        boolean:

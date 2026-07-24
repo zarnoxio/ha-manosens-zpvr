@@ -1,0 +1,7 @@
+{
+  "name": "MaNoSens ZPVR",
+  "domain": "manosens_zpvr",
+  "render_readme": true,
+  "issue_tracker": "https://github.com/zarnoxio/ha-manosens-zpvr/issues",
+  "version": "0.1.0"
+}
