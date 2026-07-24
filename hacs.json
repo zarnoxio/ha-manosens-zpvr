@@ -2,6 +2,7 @@
   "name": "MaNoSens ZPVR",
   "domain": "manosens_zpvr",
   "render_readme": true,
+   "filename": "custom_components/manosens_zpvr/__init__.py",
   "issue_tracker": "https://github.com/zarnoxio/ha-manosens-zpvr/issues",
   "version": "0.1.0"
 }
