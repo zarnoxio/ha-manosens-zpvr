@@ -4,5 +4,5 @@
   "render_readme": true,
    "filename": "custom_components/manosens_zpvr/__init__.py",
   "issue_tracker": "https://github.com/zarnoxio/ha-manosens-zpvr/issues",
-  "version": "0.1.0"
+  "version": "0.2.0"
 }

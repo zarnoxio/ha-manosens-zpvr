@@ -1,4 +1,8 @@
-"""The ManoSens ZPVR integration."""
+"""MaNoSens ZPVR integration.
+
+Register service actions even when the device is offline during setup. A
+service call is *never* treated as successful unless the API reports success.
+"""
 from __future__ import annotations
 
 import logging
@@ -8,7 +12,9 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.typing import ConfigType
 
 from .const import (
     DOMAIN,
@@ -24,74 +30,89 @@ from .api import MaNoSensZPVRAPI
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BINARY_SENSOR] # Added Platform.BINARY_SENSOR
+PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BINARY_SENSOR]
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 SERVICE_SET_PRESSURE_SCHEMA = vol.Schema(
-    {
-        vol.Required(CONF_PRESSURE_VALUE): vol.All(cv.positive_float, vol.Range(max=5.0)),
-    }
+    {vol.Required(CONF_PRESSURE_VALUE): vol.All(cv.positive_float, vol.Range(max=5.0))}
+)
+SERVICE_SET_START_STOP_SCHEMA = vol.Schema(
+    {vol.Required(CONF_START_STOP_VALUE): cv.boolean}
 )
 
-SERVICE_SET_START_STOP_SCHEMA = vol.Schema(
-    {
-        vol.Required(CONF_START_STOP_VALUE): cv.boolean,
-    }
-)
+
+def _get_active_coordinator(hass: HomeAssistant) -> MaNoSensZPVRDataUpdateCoordinator:
+    """Fail closed if there is no device, or the service target is ambiguous."""
+    coordinators = list(hass.data.get(DOMAIN, {}).values())
+    if len(coordinators) != 1:
+        raise HomeAssistantError(
+            f"MaNoSens ZPVR requires exactly one loaded device; found {len(coordinators)}"
+        )
+    coordinator = coordinators[0]
+    if not coordinator.last_update_success:
+        raise HomeAssistantError("MaNoSens ZPVR has no current validated measurements")
+    return coordinator
+
+
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Register services independently of a successful device fetch."""
+    hass.data.setdefault(DOMAIN, {})
+
+    async def handle_set_pressure(call: ServiceCall) -> None:
+        value = call.data[CONF_PRESSURE_VALUE]
+        coordinator = _get_active_coordinator(hass)
+        if not await coordinator.api.async_set_pressure(value):
+            # HTTP failure or no verified read-back: do not imply success.
+            raise HomeAssistantError(
+                f"MaNoSens ZPVR: pressure {value} bar was not confirmed by read-back"
+            )
+        _LOGGER.info("MaNoSens ZPVR required pressure verified: %s bar", value)
+
+    async def handle_set_start_stop(call: ServiceCall) -> None:
+        value = call.data[CONF_START_STOP_VALUE]
+        coordinator = _get_active_coordinator(hass)
+        if not await coordinator.api.async_set_start_stop(value):
+            raise HomeAssistantError("MaNoSens ZPVR: start/stop HTTP command failed")
+        # The device-specific semantic state encoding is still unverified.
+        # An HTTP acknowledgement does NOT prove physical action.
+        _LOGGER.info("MaNoSens ZPVR start/stop HTTP request acknowledged; physical state not verified")
+
+    hass.services.async_register(
+        DOMAIN, SERVICE_SET_PRESSURE, handle_set_pressure,
+        schema=SERVICE_SET_PRESSURE_SCHEMA,
+    )
+    hass.services.async_register(
+        DOMAIN, SERVICE_SET_START_STOP, handle_set_start_stop,
+        schema=SERVICE_SET_START_STOP_SCHEMA,
+    )
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up MaNoSens ZPVR from a config entry."""
+    """Require real sensor data at initial setup; HA retries offline entries.
+
+    A config-only first response raises ConfigEntryNotReady via the standard
+    coordinator helper, without making the service action disappear.
+    """
     host = entry.data[CONF_HOST]
     port = entry.data[CONF_PORT]
-
     api = MaNoSensZPVRAPI(hass, host, port)
     coordinator = MaNoSensZPVRDataUpdateCoordinator(hass, api)
-
     await coordinator.async_config_entry_first_refresh()
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
-
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-
-    async def handle_set_pressure(call: ServiceCall):
-        """Handle the set pressure service call."""
-        value = call.data.get(CONF_PRESSURE_VALUE)
-        _LOGGER.debug("Service call to set pressure with value: %s", value)
-
-        for entry_id in hass.data[DOMAIN]:
-            coordinator = hass.data[DOMAIN][entry_id]
-            await coordinator.api.async_set_pressure(value)
-            _LOGGER.info("Pressure set to %s for device %s", value, entry_id)
-            break
-
-    hass.services.async_register(
-        DOMAIN, SERVICE_SET_PRESSURE, handle_set_pressure, schema=SERVICE_SET_PRESSURE_SCHEMA
-    )
-
-    async def handle_set_start_stop(call: ServiceCall):
-        """Handle the set start/stop service call."""
-        value = call.data.get(CONF_START_STOP_VALUE)
-        _LOGGER.debug("Service call to set start/stop with value: %s", value)
-
-        for entry_id in hass.data[DOMAIN]:
-            coordinator = hass.data[DOMAIN][entry_id]
-            await coordinator.api.async_set_start_stop(value)
-            _LOGGER.info("Start/stop set to %s for device %s", value, entry_id)
-            break
-
-    hass.services.async_register(
-        DOMAIN, SERVICE_SET_START_STOP, handle_set_start_stop, schema=SERVICE_SET_START_STOP_SCHEMA
-    )
-
+    try:
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    except Exception:
+        hass.data[DOMAIN].pop(entry.entry_id, None)
+        raise
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload a config entry."""
-    if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
-        hass.data[DOMAIN].pop(entry.entry_id)
-
-    hass.services.async_remove(DOMAIN, SERVICE_SET_PRESSURE)
-    hass.services.async_remove(DOMAIN, SERVICE_SET_START_STOP)
-
+    """Unload entities but keep service actions registered for offline entries."""
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unload_ok:
+        hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
     return unload_ok
